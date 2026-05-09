@@ -1,0 +1,132 @@
+name: CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+
+jobs:
+  test:
+    name: Tests (PHP ${{ matrix.php }})
+    runs-on: ubuntu-latest
+
+    strategy:
+      matrix:
+        php: ['8.2', '8.3']
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB:       weale_store_test
+          POSTGRES_USER:     weale
+          POSTGRES_PASSWORD: secret
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup PHP ${{ matrix.php }}
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ matrix.php }}
+          extensions: pdo, pdo_pgsql, pgsql, intl, mbstring, zip, redis
+          coverage: xdebug
+          tools: composer:v2
+
+      - name: Validate composer.json
+        run: composer validate --strict
+
+      - name: Cache Composer dependencies
+        uses: actions/cache@v4
+        with:
+          path: vendor
+          key: ${{ runner.os }}-php-${{ matrix.php }}-${{ hashFiles('**/composer.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-php-${{ matrix.php }}-
+
+      - name: Install dependencies
+        run: composer install --prefer-dist --no-progress --no-interaction
+
+      - name: Copy .env for CI
+        run: cp .env.example .env
+
+      - name: Run migrations
+        env:
+          APP_ENV:      testing
+          DB_HOST:      127.0.0.1
+          DB_PORT:      5432
+          DB_DATABASE:  weale_store_test
+          DB_USERNAME:  weale
+          DB_PASSWORD:  secret
+        run: php vendor/bin/doctrine-migrations migrate --no-interaction --configuration=config/migrations.php
+
+      - name: Run Unit tests
+        run: composer test -- --testsuite Unit
+
+      - name: Run Feature tests
+        env:
+          APP_ENV:      testing
+          DB_HOST:      127.0.0.1
+          DB_PORT:      5432
+          DB_DATABASE:  weale_store_test
+          DB_USERNAME:  weale
+          DB_PASSWORD:  secret
+          JWT_SECRET:   ci-test-secret
+        run: composer test -- --testsuite Feature
+
+      - name: Run Integration tests
+        env:
+          APP_ENV:      testing
+          DB_HOST:      127.0.0.1
+          DB_PORT:      5432
+          DB_DATABASE:  weale_store_test
+          DB_USERNAME:  weale
+          DB_PASSWORD:  secret
+        run: composer test -- --testsuite Integration
+
+      - name: Upload coverage report
+        if: matrix.php == '8.2'
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage/
+
+  lint:
+    name: Code Quality
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.2'
+          tools: composer:v2
+
+      - name: Install dependencies
+        run: composer install --prefer-dist --no-progress --no-interaction
+
+      - name: PHP CodeSniffer (PSR-12)
+        run: composer lint
+
+      - name: PHPStan (level 8)
+        run: composer analyse

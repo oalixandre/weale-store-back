@@ -1,0 +1,89 @@
+version: '3.8'
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: docker/php/Dockerfile
+    container_name: weale_app
+    restart: unless-stopped
+    working_dir: /var/www
+    volumes:
+      - .:/var/www
+      - ./docker/php/php.ini:/usr/local/etc/php/conf.d/custom.ini
+    environment:
+      - APP_ENV=${APP_ENV:-development}
+    networks:
+      - weale_network
+    depends_on:
+      db:
+        condition: service_healthy
+
+  nginx:
+    image: nginx:1.25-alpine
+    container_name: weale_nginx
+    restart: unless-stopped
+    ports:
+      - "${APP_PORT:-8080}:80"
+    volumes:
+      - .:/var/www
+      - ./docker/nginx/default.conf:/etc/nginx/conf.d/default.conf
+    networks:
+      - weale_network
+    depends_on:
+      - app
+
+  db:
+    image: postgres:16-alpine
+    container_name: weale_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${DB_DATABASE:-weale_store}
+      POSTGRES_USER: ${DB_USERNAME:-weale}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-secret}
+    ports:
+      - "${DB_PORT:-5432}:5432"
+    volumes:
+      - weale_pgdata:/var/lib/postgresql/data
+    networks:
+      - weale_network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USERNAME:-weale} -d ${DB_DATABASE:-weale_store}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  db_test:
+    image: postgres:16-alpine
+    container_name: weale_db_test
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: weale_store_test
+      POSTGRES_USER: weale
+      POSTGRES_PASSWORD: secret
+    ports:
+      - "5433:5432"
+    networks:
+      - weale_network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U weale -d weale_store_test"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: weale_redis
+    restart: unless-stopped
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    networks:
+      - weale_network
+
+volumes:
+  weale_pgdata:
+    driver: local
+
+networks:
+  weale_network:
+    driver: bridge
